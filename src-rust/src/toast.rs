@@ -26,6 +26,7 @@ const BORDER_WIDTH: i32 = 2;
 const COLOR_BG: u32 = 0x00333333;
 const COLOR_BORDER_NORMAL: u32 = 0x004B64B2;
 const COLOR_BORDER_INPUT: u32 = 0x0000CFCF;
+const COLOR_BORDER_ERROR: u32 = 0x000000E2; // red (BGR)
 const COLOR_TITLE: u32 = 0x00FFFFFF;
 const COLOR_MESSAGE: u32 = 0x00CCCCCC;
 const COLOR_CLOSE: u32 = 0x00888888;
@@ -52,6 +53,7 @@ struct ToastState {
     title: String,
     message: String,
     input_mode: bool,
+    error_mode: bool,
     font_family: String,
     icon: HICON,
     default_icon_path: String,
@@ -484,11 +486,12 @@ unsafe extern "system" fn wnd_proc(
 // --- Paint ---
 
 unsafe fn paint(hwnd: HWND) {
-    let (title, message, input_mode, font_family, icon, default_icon_path) = with_toast(|state| {
+    let (title, message, input_mode, error_mode, font_family, icon, default_icon_path) = with_toast(|state| {
         (
             state.title.clone(),
             state.message.clone(),
             state.input_mode,
+            state.error_mode,
             state.font_family.clone(),
             state.icon,
             state.default_icon_path.clone(),
@@ -504,8 +507,14 @@ unsafe fn paint(hwnd: HWND) {
     FillRect(hdc, &rect, bg);
     let _ = DeleteObject(HGDIOBJ(bg.0));
 
-    // Border (color depends on input mode)
-    let border_color = if input_mode { COLOR_BORDER_INPUT } else { COLOR_BORDER_NORMAL };
+    // Border (color depends on mode: error > input > normal)
+    let border_color = if error_mode {
+        COLOR_BORDER_ERROR
+    } else if input_mode {
+        COLOR_BORDER_INPUT
+    } else {
+        COLOR_BORDER_NORMAL
+    };
     let border = CreateSolidBrush(COLORREF(border_color));
     let borders = [
         RECT { left: 0, top: 0, right: WINDOW_WIDTH, bottom: BORDER_WIDTH },
@@ -604,6 +613,7 @@ pub struct ToastParams {
     pub title: String,
     pub message: String,
     pub input_mode: bool,
+    pub error_mode: bool,
     pub font_family: String,
     pub icon: HICON,
     pub default_icon_path: String,
@@ -630,6 +640,7 @@ pub fn show_toast(params: ToastParams) {
             title: params.title,
             message: params.message,
             input_mode: params.input_mode,
+            error_mode: params.error_mode,
             font_family: params.font_family,
             icon: params.icon,
             default_icon_path: params.default_icon_path,

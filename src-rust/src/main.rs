@@ -260,6 +260,7 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
         title,
         message,
         input_mode: args.input_mode,
+        error_mode: false,
         font_family,
         icon,
         default_icon_path: discovered.default_icon_path.unwrap_or_default(),
