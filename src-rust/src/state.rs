@@ -1,7 +1,8 @@
 //! State file save/load/delete.
 //!
 //! State file: %TEMP%\claude-notify-{session_id}.txt
-//! Format: 4 lines (HWND, RuntimeId, caller exe path, user prompt)
+//! Format: 5 lines (HWND, RuntimeId, caller exe path, user prompt, project name)
+//! Legacy 4-line files (no project name) are read with project_name defaulting to empty.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::IsWindow;
