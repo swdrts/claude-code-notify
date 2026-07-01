@@ -35,8 +35,10 @@ const TIMER_FADE: usize = 1;
 const TIMER_START_FADE: usize = 2;
 const TIMER_REPOSITION: usize = 3;
 const TIMER_CHECK_BOTTOM: usize = 4;
+const TIMER_CHECK_FOREGROUND: usize = 5;
 
 const DISPLAY_MS: u32 = 3000;
+const FOREGROUND_POLL_MS: u32 = 500;
 const FADE_MS: u32 = 1000;
 const INITIAL_ALPHA: u8 = 230;
 
@@ -342,6 +344,43 @@ unsafe extern "system" fn wnd_proc(
                         });
                         let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
                         SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                    }
+                }
+                TIMER_CHECK_FOREGROUND => {
+                    // Poll: has the source Claude window returned to the foreground?
+                    let (target_hwnd, wt_hwnd, wt_runtime_id) = with_toast(|s| {
+                        (s.target_hwnd, s.wt_hwnd, s.wt_runtime_id.clone())
+                    });
+
+                    let should_fade = {
+                        // No target (error toast with no state file) -> click-only.
+                        let has_target = !target_hwnd.is_invalid()
+                            && target_hwnd != HWND::default()
+                            && unsafe { IsWindow(Some(target_hwnd)).as_bool() };
+                        if !has_target {
+                            false
+                        } else {
+                            let fg = unsafe { GetForegroundWindow() };
+                            if fg != target_hwnd {
+                                false
+                            } else {
+                                // HWND matches. WT source needs tab confirmation.
+                                let is_wt_source = wt_hwnd != HWND::default();
+                                if !is_wt_source {
+                                    true
+                                } else {
+                                    let current_tab =
+                                        crate::uiautomation::get_selected_tab_runtime_id(fg);
+                                    should_dismiss_wt(&wt_runtime_id, &current_tab)
+                                }
+                            }
+                        }
+                    };
+
+                    if should_fade {
+                        let _ = KillTimer(Some(hwnd), TIMER_CHECK_FOREGROUND);
+                        with_toast_mut(|state| state.is_fading = true);
+                        SetTimer(Some(hwnd), TIMER_FADE, 16, None);
                     }
                 }
                 _ => {}
