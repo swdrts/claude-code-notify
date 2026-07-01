@@ -26,6 +26,12 @@ pub fn extract_string(json: &str, key: &str) -> String {
         .to_string()
 }
 
+/// Extract the `cwd` field from a hook's stdin JSON.
+/// Returns empty string if absent or not a string.
+pub fn extract_cwd(json: &str) -> String {
+    extract_string(json, "cwd")
+}
+
 /// Extract the first question text from an AskUserQuestion tool's tool_input.
 /// Falls back to empty string if not present. Schema:
 /// `{ "tool_input": { "questions": [ { "question": "...", "header": "..." }, ... ] } }`

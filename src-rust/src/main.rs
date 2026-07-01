@@ -79,7 +79,7 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
     debug_log!("Caller exe path: {}", caller_path);
 
     // Save state
-    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt);
+    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt, "placeholder");
     debug_log!("State saved to {:?}", state::state_file_path(&session_id));
 
     0
