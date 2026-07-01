@@ -41,6 +41,9 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
     let input = json::read_stdin_json();
     let session_id = json::extract_string(&input, "session_id");
     let prompt = json::extract_string(&input, "prompt");
+    let cwd = json::extract_cwd(&input);
+    let project_name = state::project_name_from_cwd(&cwd);
+    debug_log!("Project name: {}", project_name);
 
     if session_id.is_empty() {
         debug_log!("No session_id, skipping save");
@@ -79,7 +82,7 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
     debug_log!("Caller exe path: {}", caller_path);
 
     // Save state
-    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt, "placeholder");
+    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt, &project_name);
     debug_log!("State saved to {:?}", state::state_file_path(&session_id));
 
     0
@@ -97,6 +100,55 @@ fn run_notify_mode(debug: bool) -> i32 {
     debug_log!("Notify mode, session: {}", session_id);
 
     let mut cmd = format!("\"{}\" --notify-show --session \"{}\"", exe_path(), session_id);
+    if debug {
+        cmd.push_str(" --debug");
+    }
+
+    debug_log!("Spawning: {}", cmd);
+    spawn::spawn_detached(&cmd);
+    0
+}
+
+fn run_error_mode(debug: bool) -> i32 {
+    let input = json::read_stdin_json();
+    let session_id = json::extract_string(&input, "session_id");
+
+    if session_id.is_empty() {
+        debug_log!("No session_id for error mode");
+        return 1;
+    }
+
+    // Derive project name from live cwd, fall back to "Claude Code".
+    let cwd = json::extract_cwd(&input);
+    let project_name = state::project_name_from_cwd(&cwd);
+
+    // Error text: prefer the API error message, fall back to the error type.
+    let error_text = {
+        let m = json::extract_string(&input, "last_assistant_message");
+        if !m.is_empty() {
+            m
+        } else {
+            json::extract_string(&input, "error")
+        }
+    };
+
+    // Subtitle: "<project> · <error>". sanitize_message() truncates to 35 chars.
+    let message = format!("{} \u{00B7} {}", project_name, error_text);
+
+    debug_log!(
+        "Error mode, session: {}, project: {}, message: {}",
+        session_id, project_name, message
+    );
+
+    let mut cmd = format!(
+        "\"{}\" --notify-show --error-mode --session \"{}\"",
+        exe_path(),
+        session_id
+    );
+    // Title has no quotes to escape; pass through. Message is escaped like run_input_mode does.
+    cmd.push_str(&format!(" --title \"{}\"", "Claude 出错"));
+    let escaped_msg = message.replace('"', "\\\"");
+    cmd.push_str(&format!(" --message \"{}\"", escaped_msg));
     if debug {
         cmd.push_str(" --debug");
     }
@@ -210,7 +262,20 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
         st.target_hwnd, st.wt_runtime_id, st.icon_path, st.user_prompt);
 
     // 2. Determine notification content (SPEC 14.1-14.2)
-    let (title, message) = if args.input_mode {
+    let (title, message) = if args.error_mode {
+        // Error path: title/message were passed in via --title/--message by run_error_mode.
+        let msg = if !args.message.is_empty() {
+            args.message.clone()
+        } else {
+            "Claude encountered an error".to_string()
+        };
+        let title = if !args.title.is_empty() {
+            args.title.clone()
+        } else {
+            "Claude 出错".to_string()
+        };
+        (title, msg)
+    } else if args.input_mode {
         let msg = if !args.message.is_empty() {
             args.message.clone()
         } else {
@@ -223,12 +288,15 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
         };
         (title, msg)
     } else {
-        let msg = if !st.user_prompt.is_empty() {
+        // Completion: title = status, message = project name (fall back to prompt then default).
+        let project = if !st.project_name.is_empty() {
+            st.project_name.clone()
+        } else if !st.user_prompt.is_empty() {
             st.user_prompt.clone()
         } else {
             "Task completed".to_string()
         };
-        ("Claude Code".to_string(), msg)
+        ("任务完成".to_string(), project)
     };
 
     // 3. Sanitize message (SPEC 14.3)
@@ -260,13 +328,14 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
         title,
         message,
         input_mode: args.input_mode,
-        error_mode: false,
+        error_mode: args.error_mode,
         font_family,
         icon,
         default_icon_path: discovered.default_icon_path.unwrap_or_default(),
         target_hwnd: st.target_hwnd,
         wt_hwnd: st.wt_hwnd,
         wt_runtime_id: st.wt_runtime_id,
+        ..Default::default()
     });
 
     // 9. Cleanup
@@ -313,11 +382,7 @@ fn main() {
         cli::Mode::Input => run_input_mode(args.debug),
         cli::Mode::NotifyShow => run_notify_show_mode(&args),
         cli::Mode::Cleanup => run_cleanup_mode(),
-        cli::Mode::Error => {
-            // Placeholder: real error-mode wiring lands in Task 4.
-            print_usage();
-            1
-        }
+        cli::Mode::Error => run_error_mode(args.debug),
         cli::Mode::None => {
             print_usage();
             1

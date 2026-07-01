@@ -609,6 +609,7 @@ unsafe fn paint(hwnd: HWND) {
 
 // --- Public API ---
 
+#[derive(Default)]
 pub struct ToastParams {
     pub title: String,
     pub message: String,
