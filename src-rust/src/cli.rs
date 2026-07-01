@@ -9,6 +9,7 @@ pub enum Mode {
     Notify,
     Input,
     NotifyShow,
+    Error,
     Cleanup,
     None,
 }
@@ -18,6 +19,7 @@ pub struct Args {
     pub mode: Mode,
     pub debug: bool,
     pub input_mode: bool,
+    pub error_mode: bool,
     pub session: String,
     pub message: String,
     pub title: String,
@@ -29,6 +31,7 @@ pub fn parse_args() -> Args {
         mode: Mode::None,
         debug: false,
         input_mode: false,
+        error_mode: false,
         session: String::new(),
         message: String::new(),
         title: String::new(),
@@ -41,9 +44,11 @@ pub fn parse_args() -> Args {
             "--notify" => result.mode = Mode::Notify,
             "--input" => result.mode = Mode::Input,
             "--notify-show" => result.mode = Mode::NotifyShow,
+            "--error" => result.mode = Mode::Error,
             "--cleanup" => result.mode = Mode::Cleanup,
             "--debug" | "-d" => result.debug = true,
             "--input-mode" => result.input_mode = true,
+            "--error-mode" => result.error_mode = true,
             "--session" => {
                 i += 1;
                 if i < args.len() {

@@ -312,6 +312,11 @@ fn main() {
         cli::Mode::Input => run_input_mode(args.debug),
         cli::Mode::NotifyShow => run_notify_show_mode(&args),
         cli::Mode::Cleanup => run_cleanup_mode(),
+        cli::Mode::Error => {
+            // Placeholder: real error-mode wiring lands in Task 4.
+            print_usage();
+            1
+        }
         cli::Mode::None => {
             print_usage();
             1
