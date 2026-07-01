@@ -24,7 +24,7 @@ const CLOSE_BUTTON_MARGIN: i32 = 6;
 const BORDER_WIDTH: i32 = 2;
 
 const COLOR_BG: u32 = 0x00333333;
-const COLOR_BORDER_NORMAL: u32 = 0x004B64B2;
+const COLOR_BORDER_NORMAL: u32 = 0x00E68C46; // sky blue RGB(70,140,230) — clearly distinct from error red & input yellow
 const COLOR_BORDER_INPUT: u32 = 0x0000CFCF;
 const COLOR_BORDER_ERROR: u32 = 0x000000E2; // red (BGR)
 const COLOR_TITLE: u32 = 0x00FFFFFF;
