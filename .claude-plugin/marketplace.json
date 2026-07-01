@@ -1,17 +1,17 @@
 {
   "name": "claude-code-notify",
-  "description": "Native Windows toast notifications for Claude Code",
+  "description": "Native Windows toast notifications for Claude Code (swdrts fork: project name + error state)",
   "owner": {
-    "name": "chuilishi"
+    "name": "swdrts"
   },
   "plugins": [
     {
       "name": "claude-code-notify",
-      "description": "Native Windows toast notifications for Claude Code with window activation",
-      "version": "1.1.0",
+      "description": "Native Windows toast notifications for Claude Code with project name + error state notifications",
+      "version": "1.2.0",
       "source": "./",
       "author": {
-        "name": "chuilishi"
+        "name": "swdrts"
       }
     }
   ]
