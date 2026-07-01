@@ -1,0 +1,325 @@
+#![windows_subsystem = "windows"]
+
+mod activate;
+mod assets;
+mod cli;
+mod json;
+mod log;
+mod process;
+mod spawn;
+mod state;
+mod toast;
+mod uiautomation;
+mod util;
+
+use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Com::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
+
+fn print_usage() {
+    unsafe {
+        let _ = windows::Win32::System::Console::AllocConsole();
+    }
+    println!(
+        "Usage:\n  \
+         ToastWindow.exe --save      Save window state (UserPromptSubmit hook)\n  \
+         ToastWindow.exe --notify    Show task-completed notification (Stop hook)\n  \
+         ToastWindow.exe --input     Show input-required notification (Notification / PreToolUse hooks)\n  \
+         ToastWindow.exe --cleanup   Delete the session state file (SessionEnd hook)\n\n\
+         All modes read session_id from stdin JSON for state file isolation."
+    );
+}
+
+fn exe_path() -> String {
+    std::env::current_exe()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn run_save_mode(immediate_hwnd: HWND) -> i32 {
+    let input = json::read_stdin_json();
+    let session_id = json::extract_string(&input, "session_id");
+    let prompt = json::extract_string(&input, "prompt");
+
+    if session_id.is_empty() {
+        debug_log!("No session_id, skipping save");
+        return 0;
+    }
+
+    debug_log!("Session ID: {}", session_id);
+    debug_log!("Prompt: {}", prompt);
+
+    // Use immediate_hwnd, fall back to GetForegroundWindow if invalid (SPEC 3.2)
+    let hwnd = if !immediate_hwnd.is_invalid()
+        && immediate_hwnd != HWND::default()
+        && unsafe { IsWindow(Some(immediate_hwnd)).as_bool() }
+    {
+        debug_log!("Using immediate HWND: {:?}", immediate_hwnd);
+        immediate_hwnd
+    } else {
+        let fallback = unsafe { GetForegroundWindow() };
+        debug_log!("Immediate HWND invalid, using fallback: {:?}", fallback);
+        fallback
+    };
+
+    // Detect Windows Terminal and get RuntimeId
+    let mut runtime_id = String::new();
+    let class = util::get_class_name(hwnd);
+    debug_log!("Window class: {}", class);
+
+    if class == "CASCADIA_HOSTING_WINDOW_CLASS" {
+        debug_log!("Detected Windows Terminal, capturing tab RuntimeId");
+        runtime_id = uiautomation::get_selected_tab_runtime_id(hwnd);
+        debug_log!("RuntimeId: {}", runtime_id);
+    }
+
+    // Find caller exe path for icon extraction
+    let caller_path = process::find_caller_exe_path();
+    debug_log!("Caller exe path: {}", caller_path);
+
+    // Save state
+    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt);
+    debug_log!("State saved to {:?}", state::state_file_path(&session_id));
+
+    0
+}
+
+fn run_notify_mode(debug: bool) -> i32 {
+    let input = json::read_stdin_json();
+    let session_id = json::extract_string(&input, "session_id");
+
+    if session_id.is_empty() {
+        debug_log!("No session_id for notify mode");
+        return 1;
+    }
+
+    debug_log!("Notify mode, session: {}", session_id);
+
+    let mut cmd = format!("\"{}\" --notify-show --session \"{}\"", exe_path(), session_id);
+    if debug {
+        cmd.push_str(" --debug");
+    }
+
+    debug_log!("Spawning: {}", cmd);
+    spawn::spawn_detached(&cmd);
+    0
+}
+
+fn run_input_mode(debug: bool) -> i32 {
+    let input = json::read_stdin_json();
+    let session_id = json::extract_string(&input, "session_id");
+
+    if session_id.is_empty() {
+        debug_log!("No session_id for input mode");
+        return 1;
+    }
+
+    let notification_type = json::extract_string(&input, "notification_type");
+    let tool_name = json::extract_string(&input, "tool_name");
+
+    // Filter out non-actionable notification types (auth success, MCP elicitation echoes).
+    // These don't require user attention, so we skip the toast entirely.
+    if matches!(
+        notification_type.as_str(),
+        "auth_success" | "elicitation_complete" | "elicitation_response"
+    ) {
+        debug_log!(
+            "Skipping non-actionable notification_type: {}",
+            notification_type
+        );
+        return 0;
+    }
+
+    // Decide title and message based on the actual scenario.
+    // Priority: PreToolUse tool_name > Notification notification_type > generic fallback.
+    let (title, message) = if tool_name == "AskUserQuestion" {
+        // Claude is proactively asking the user a question (with options UI).
+        let q = json::extract_first_question(&input);
+        let msg = if q.is_empty() {
+            "Claude is asking you a question".to_string()
+        } else {
+            q
+        };
+        ("Claude is Asking".to_string(), msg)
+    } else if tool_name == "ExitPlanMode" {
+        // Plan mode: Claude finished planning and wants user approval.
+        ("Plan Ready for Approval".to_string(), "Claude proposes a plan — review and approve".to_string())
+    } else {
+        let msg = json::extract_string(&input, "message");
+        let title = match notification_type.as_str() {
+            "permission_prompt" => "Permission Required",
+            "idle_prompt" => "Claude is Waiting",
+            "elicitation_dialog" => "MCP Asks",
+            _ => "Input Required",
+        };
+        let msg = if msg.is_empty() {
+            "Claude needs your input".to_string()
+        } else {
+            msg
+        };
+        (title.to_string(), msg)
+    };
+
+    debug_log!(
+        "Input mode, session: {}, tool: {}, type: {}, title: {}, message: {}",
+        session_id, tool_name, notification_type, title, message
+    );
+
+    let mut cmd = format!(
+        "\"{}\" --notify-show --input-mode --session \"{}\"",
+        exe_path(),
+        session_id
+    );
+    // Escape quotes in message and title (SPEC 16.2)
+    let escaped_msg = message.replace('"', "\\\"");
+    cmd.push_str(&format!(" --message \"{}\"", escaped_msg));
+    let escaped_title = title.replace('"', "\\\"");
+    cmd.push_str(&format!(" --title \"{}\"", escaped_title));
+    if debug {
+        cmd.push_str(" --debug");
+    }
+
+    debug_log!("Spawning: {}", cmd);
+    spawn::spawn_detached(&cmd);
+    0
+}
+
+fn run_cleanup_mode() -> i32 {
+    let input = json::read_stdin_json();
+    let session_id = json::extract_string(&input, "session_id");
+
+    if !session_id.is_empty() {
+        debug_log!("Cleanup: deleting state for session {}", session_id);
+        state::delete_state(&session_id);
+    }
+    0
+}
+
+fn run_notify_show_mode(args: &cli::Args) -> i32 {
+    if args.session.is_empty() {
+        debug_log!("No session ID for notify-show mode");
+        return 1;
+    }
+
+    debug_log!("NotifyShow mode, session: {}", args.session);
+
+    // 1. Load state from file
+    let st = state::load_state(&args.session);
+    debug_log!("Loaded state: HWND={:?}, RuntimeId={}, IconPath={}, Prompt={}",
+        st.target_hwnd, st.wt_runtime_id, st.icon_path, st.user_prompt);
+
+    // 2. Determine notification content (SPEC 14.1-14.2)
+    let (title, message) = if args.input_mode {
+        let msg = if !args.message.is_empty() {
+            args.message.clone()
+        } else {
+            "Claude needs your input".to_string()
+        };
+        let title = if !args.title.is_empty() {
+            args.title.clone()
+        } else {
+            "Input Required".to_string()
+        };
+        (title, msg)
+    } else {
+        let msg = if !st.user_prompt.is_empty() {
+            st.user_prompt.clone()
+        } else {
+            "Task completed".to_string()
+        };
+        ("Claude Code".to_string(), msg)
+    };
+
+    // 3. Sanitize message (SPEC 14.3)
+    let message = sanitize_message(&message);
+    debug_log!("Title: {}, Message: {}", title, message);
+
+    // 4. Discover assets
+    let discovered = assets::discover_assets();
+    debug_log!("Sound: {:?}, Font: {:?}, Icon: {:?}",
+        discovered.sound_file, discovered.font_file, discovered.default_icon_path);
+
+    // 5. Extract icon from saved exe path
+    let icon = assets::extract_icon(&st.icon_path);
+    debug_log!("App icon: {:?}", icon);
+
+    // 6. Load custom font
+    let font_family = if let Some(ref font_path) = discovered.font_file {
+        assets::load_font(font_path).unwrap_or_else(|| "Segoe UI".to_string())
+    } else {
+        "Segoe UI".to_string()
+    };
+    debug_log!("Font family: {}", font_family);
+
+    // 7. Play sound
+    assets::play_sound(&discovered.sound_file);
+
+    // 8. Show toast (blocks until closed)
+    toast::show_toast(toast::ToastParams {
+        title,
+        message,
+        input_mode: args.input_mode,
+        font_family,
+        icon,
+        default_icon_path: discovered.default_icon_path.unwrap_or_default(),
+        target_hwnd: st.target_hwnd,
+        wt_hwnd: st.wt_hwnd,
+        wt_runtime_id: st.wt_runtime_id,
+    });
+
+    // 9. Cleanup
+    if !icon.is_invalid() {
+        unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(icon); }
+    }
+    if let Some(ref font_path) = discovered.font_file {
+        assets::unload_font(font_path);
+    }
+
+    0
+}
+
+fn sanitize_message(msg: &str) -> String {
+    // Replace newlines with space
+    let mut s: String = msg.chars().map(|c| {
+        if c == '\n' || c == '\r' { ' ' } else { c }
+    }).collect();
+
+    // Truncate at 35 chars + "..."
+    if s.chars().count() > 35 {
+        s = s.chars().take(35).collect::<String>() + "...";
+    }
+    s
+}
+
+fn main() {
+    // CRITICAL: Capture foreground window IMMEDIATELY (SPEC 3.1)
+    let immediate_hwnd = unsafe { GetForegroundWindow() };
+
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        if hr.is_err() {
+            debug_log!("CoInitializeEx failed: {:?}", hr);
+        }
+    }
+
+    let args = cli::parse_args();
+    log::init(args.debug);
+
+    let exit_code = match args.mode {
+        cli::Mode::Save => run_save_mode(immediate_hwnd),
+        cli::Mode::Notify => run_notify_mode(args.debug),
+        cli::Mode::Input => run_input_mode(args.debug),
+        cli::Mode::NotifyShow => run_notify_show_mode(&args),
+        cli::Mode::Cleanup => run_cleanup_mode(),
+        cli::Mode::None => {
+            print_usage();
+            1
+        }
+    };
+
+    unsafe {
+        CoUninitialize();
+    }
+    std::process::exit(exit_code);
+}

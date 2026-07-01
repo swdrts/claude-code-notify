@@ -1,0 +1,17 @@
+# Build outputs
+*.obj
+*.pdb
+*.log
+
+# Allow bundled exe
+!notifications/ToastWindow.exe
+
+# Rust build output
+src-rust/target/
+
+# Local settings
+.claude/
+
+# Temp files
+*.tmp
+*.zip
