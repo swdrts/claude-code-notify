@@ -145,8 +145,9 @@ fn run_error_mode(debug: bool) -> i32 {
         exe_path(),
         session_id
     );
-    // Title has no quotes to escape; pass through. Message is escaped like run_input_mode does.
-    cmd.push_str(&format!(" --title \"{}\"", "Claude 出错"));
+    // Escape both title and message like run_input_mode does (defensive: future titles may be dynamic).
+    let escaped_title = "Claude 出错".replace('"', "\\\"");
+    cmd.push_str(&format!(" --title \"{}\"", escaped_title));
     let escaped_msg = message.replace('"', "\\\"");
     cmd.push_str(&format!(" --message \"{}\"", escaped_msg));
     if debug {
