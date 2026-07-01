@@ -37,7 +37,6 @@ const TIMER_REPOSITION: usize = 3;
 const TIMER_CHECK_BOTTOM: usize = 4;
 const TIMER_CHECK_FOREGROUND: usize = 5;
 
-const DISPLAY_MS: u32 = 3000;
 const FOREGROUND_POLL_MS: u32 = 500;
 const FADE_MS: u32 = 1000;
 const INITIAL_ALPHA: u8 = 230;
@@ -45,7 +44,6 @@ const INITIAL_ALPHA: u8 = 230;
 const TOAST_CLASS_NAME: &str = "ClaudeCodeToast";
 
 const WM_TOAST_CHECK_POSITION: u32 = WM_USER + 101;
-const WM_TOAST_PAUSE_TIMER: u32 = WM_USER + 102;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 // --- Global state for the toast window (per-process, one toast per process) ---
@@ -225,31 +223,6 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
     }
 }
 
-fn notify_all_toasts_pause_timer(pause: bool) {
-    let my_hwnd = with_toast(|t| t.hwnd);
-    // Send to self
-    unsafe {
-        let _ = SendMessageW(
-            my_hwnd,
-            WM_TOAST_PAUSE_TIMER,
-            Some(WPARAM(if pause { 1 } else { 0 })),
-            Some(LPARAM(0)),
-        );
-    }
-    // Send to others
-    let others = enum_other_toasts();
-    for t in &others {
-        unsafe {
-            let _ = SendMessageW(
-                t.hwnd,
-                WM_TOAST_PAUSE_TIMER,
-                Some(WPARAM(if pause { 1 } else { 0 })),
-                Some(LPARAM(0)),
-            );
-        }
-    }
-}
-
 fn animate_to_position(hwnd: HWND) {
     let mut rect = RECT::default();
     unsafe { let _ = GetWindowRect(hwnd, &mut rect); }
@@ -343,7 +316,8 @@ unsafe extern "system" fn wnd_proc(
                             state.is_bottom_toast = true;
                         });
                         let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        // No timeout start — toast persists; foreground poll (TIMER_CHECK_FOREGROUND)
+                        // started in show_toast handles dismissal.
                     }
                 }
                 TIMER_CHECK_FOREGROUND => {
@@ -437,17 +411,12 @@ unsafe extern "system" fn wnd_proc(
                     dwHoverTime: 0,
                 };
                 let _ = TrackMouseEvent(&mut tme);
-
-                // Pause all toasts
-                notify_all_toasts_pause_timer(true);
             }
             LRESULT(0)
         }
 
         WM_MOUSELEAVE => {
             with_toast_mut(|state| state.mouse_inside = false);
-            // Resume all toasts
-            notify_all_toasts_pause_timer(false);
             LRESULT(0)
         }
 
@@ -482,34 +451,9 @@ unsafe extern "system" fn wnd_proc(
                 with_toast_mut(|state| {
                     state.is_bottom_toast = true;
                     let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
-                    if !state.mouse_inside {
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
-                    }
                 });
             }
 
-            LRESULT(0)
-        }
-
-        x if x == WM_TOAST_PAUSE_TIMER => {
-            let pause = wparam.0 == 1;
-
-            with_toast_mut(|state| {
-                if pause {
-                    if state.is_fading {
-                        let _ = KillTimer(Some(hwnd), TIMER_FADE);
-                        state.is_fading = false;
-                        state.alpha = INITIAL_ALPHA;
-                        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), INITIAL_ALPHA, LWA_ALPHA);
-                    }
-                    let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
-                } else {
-                    // Resume: only start fade timer if bottom toast and mouse not inside
-                    if state.is_bottom_toast && !state.mouse_inside {
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
-                    }
-                }
-            });
             LRESULT(0)
         }
 
@@ -734,13 +678,15 @@ pub fn show_toast(params: ToastParams) {
 
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), INITIAL_ALPHA, LWA_ALPHA);
 
-        // Determine if bottom toast and start appropriate timer
-        if is_bottom_toast_check(hwnd, taskbar_edge) {
-            with_toast_mut(|state| state.is_bottom_toast = true);
-            SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
-        } else {
+        // Start foreground polling (toast persists until source window is foreground or click).
+        SetTimer(Some(hwnd), TIMER_CHECK_FOREGROUND, FOREGROUND_POLL_MS, None);
+
+        // Stacking: if not yet the bottom toast, keep checking until we settle.
+        if !is_bottom_toast_check(hwnd, taskbar_edge) {
             with_toast_mut(|state| state.is_bottom_toast = false);
             SetTimer(Some(hwnd), TIMER_CHECK_BOTTOM, 200, None);
+        } else {
+            with_toast_mut(|state| state.is_bottom_toast = true);
         }
 
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
