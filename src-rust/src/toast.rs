@@ -745,3 +745,51 @@ fn get_cursor_monitor_work_area() -> (RECT, HMONITOR) {
         (mi.rcWork, monitor)
     }
 }
+
+/// Decide whether a Windows Terminal foreground match should dismiss the toast.
+///
+/// Caller has already confirmed the foreground HWND equals `target_hwnd` and that
+/// the foreground window is of class `CASCADIA_HOSTING_WINDOW_CLASS` (Windows Terminal).
+/// This function decides the tab part:
+/// - `stored_wt_id` empty (captured outside WT, or UIA failed at save): degrade to
+///   HWND-only match -> dismiss (`true`).
+/// - `current_wt_id` empty (live UIA read failed) but `stored_wt_id` non-empty: can't
+///   confirm the tab -> don't dismiss (`false`, safe side).
+/// - both non-empty: dismiss iff equal.
+fn should_dismiss_wt(stored_wt_id: &str, current_wt_id: &str) -> bool {
+    if stored_wt_id.is_empty() {
+        return true;
+    }
+    if current_wt_id.is_empty() {
+        return false;
+    }
+    stored_wt_id == current_wt_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wt_tab_match_dismisses() {
+        assert_eq!(should_dismiss_wt("TabA.1.2", "TabA.1.2"), true);
+    }
+
+    #[test]
+    fn wt_tab_mismatch_does_not_dismiss() {
+        assert_eq!(should_dismiss_wt("TabA.1.2", "TabB.3.4"), false);
+    }
+
+    #[test]
+    fn wt_stored_empty_degrades_to_hwnd_only_match() {
+        // Captured outside WT or UIA failed at save -> dismiss on HWND match alone.
+        assert_eq!(should_dismiss_wt("", "TabA.1.2"), true);
+        assert_eq!(should_dismiss_wt("", ""), true);
+    }
+
+    #[test]
+    fn wt_current_empty_but_stored_present_does_not_dismiss() {
+        // Live UIA read failed but we had a stored tab -> can't confirm, stay (safe side).
+        assert_eq!(should_dismiss_wt("TabA.1.2", ""), false);
+    }
+}
