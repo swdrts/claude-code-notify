@@ -30,7 +30,7 @@
 ## 🚀 Installation
 
 ```bash
-claude plugin marketplace add chuilishi/claude-code-notify
+claude plugin marketplace add swdrts/claude-code-notify
 claude plugin install claude-code-notify@claude-code-notify
 ```
 
